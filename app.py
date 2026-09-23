@@ -12,9 +12,12 @@ import hashlib
 import io
 import json
 import os
+import queue
 import re
 import secrets
 import sys
+import threading
+import time
 from collections import Counter
 
 import requests as http
@@ -41,25 +44,22 @@ COLUMNS = ["event_type", "src_ip", "xff_raw", "method", "path", "query", "status
            "username", "password", "file_name", "file_size", "file_sha256", "file_magic"]
 INSERT = f"INSERT INTO events ({', '.join(COLUMNS)}) VALUES ({', '.join(['%s'] * len(COLUMNS))})"
 
-pool = None
-if DATABASE_URL:
-    from psycopg.rows import dict_row
-    from psycopg_pool import ConnectionPool
-    pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=4, open=True,
-                          kwargs={"prepare_threshold": None, "connect_timeout": 10})
-
+# Connections are opened on demand inside each worker process. Opening them at import
+# time breaks when the web server copies (forks) the app into several workers.
 _schema_ready = False
 
 
+def db():
+    import psycopg
+    return psycopg.connect(DATABASE_URL, connect_timeout=5, prepare_threshold=None)
+
+
 def ensure_schema():
-    """Create tables if missing. Retried on every use until it succeeds, so a database
-    that wasn't ready when the site started doesn't break anything."""
     global _schema_ready
-    if _schema_ready or pool is None:
-        return
-    with pool.connection() as conn:
-        conn.execute(SCHEMA)
-    _schema_ready = True
+    if not _schema_ready:
+        with db() as conn:
+            conn.execute(SCHEMA)
+        _schema_ready = True
 
 
 # =====================================================================
@@ -70,17 +70,51 @@ USER_FIELDS = ("username", "user", "log", "login", "email", "uname", "user_login
 PASS_FIELDS = ("password", "pass", "pwd", "passwd", "user_pass", "pma_password")
 
 
+# Events go into a queue and a background thread writes them to the database,
+# so attackers get an instant response even if the database is slow or down.
+# The thread is started lazily in each worker process (threads don't survive a fork).
+_queue = None
+_writer_pid = None
+_writer_lock = threading.Lock()
+
+
 def save(rows):
-    if pool is None:
-        for r in rows:
-            print(json.dumps(r, default=str), flush=True)
-        return
-    try:
-        ensure_schema()
-        with pool.connection() as conn:
-            conn.cursor().executemany(INSERT, [[r.get(c) for c in COLUMNS] for r in rows])
-    except Exception as e:  # a database hiccup must never break the bait
-        print(f"db write failed: {e}", file=sys.stderr)
+    global _queue, _writer_pid
+    if _writer_pid != os.getpid():
+        with _writer_lock:
+            if _writer_pid != os.getpid():
+                _queue = queue.Queue(maxsize=20000)
+                threading.Thread(target=_writer, args=(_queue,), daemon=True).start()
+                _writer_pid = os.getpid()
+    for r in rows:
+        try:
+            _queue.put_nowait(r)
+        except queue.Full:
+            print("event queue full, dropping event", file=sys.stderr)
+
+
+def _writer(q):
+    while True:
+        batch = [q.get()]
+        while len(batch) < 200:
+            try:
+                batch.append(q.get_nowait())
+            except queue.Empty:
+                break
+        if not DATABASE_URL:
+            for r in batch:
+                print(json.dumps(r, default=str), flush=True)
+            continue
+        for attempt in range(3):
+            try:
+                ensure_schema()
+                with db() as conn:
+                    for r in batch:
+                        conn.execute(INSERT, [r.get(c) for c in COLUMNS])
+                break
+            except Exception as e:
+                print(f"db write failed (attempt {attempt + 1}): {e}", file=sys.stderr, flush=True)
+                time.sleep(5)
 
 
 @app.after_request
@@ -271,7 +305,7 @@ def file_kind(magic):
 
 def locate(ips):
     """Country/city/ISP for each IP via ip-api.com, saved so each IP is looked up once."""
-    with pool.connection() as conn:
+    with db() as conn:
         found = {r[0]: r[1] for r in conn.execute("SELECT ip, data FROM geo WHERE ip = ANY(%s)", (list(ips),))}
     missing = [ip for ip in ips if ip not in found][:300]  # at most 3 lookups per page load
     for i in range(0, len(missing), 100):
@@ -282,7 +316,7 @@ def locate(ips):
         except Exception as e:
             print(f"geo lookup failed: {e}", file=sys.stderr)
             break
-        with pool.connection() as conn:
+        with db() as conn:
             conn.cursor().executemany("INSERT INTO geo VALUES (%s, %s) ON CONFLICT DO NOTHING",
                                       [(ip, json.dumps(d)) for ip, d in new.items()])
         found.update(new)
@@ -295,7 +329,8 @@ def load(days, ip=None):
     if ip:
         sql += " AND src_ip = %s"
         args.append(ip)
-    with pool.connection() as conn:
+    from psycopg.rows import dict_row
+    with db() as conn:
         rows = conn.cursor(row_factory=dict_row).execute(sql + " ORDER BY ts DESC LIMIT 50000", args).fetchall()
     for e in rows:
         e["attack"] = attack_type(e)
@@ -393,7 +428,7 @@ points.forEach(p => L.circleMarker([p.lat, p.lon], {radius: Math.min(4 + Math.sq
 def dashboard():
     if not authorized():
         return ask_password()
-    if pool is None:
+    if not DATABASE_URL:
         return "DATABASE_URL is not set, so there is nothing to show yet."
     try:
         ensure_schema()
