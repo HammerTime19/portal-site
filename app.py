@@ -47,11 +47,19 @@ if DATABASE_URL:
     from psycopg_pool import ConnectionPool
     pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=4, open=True,
                           kwargs={"prepare_threshold": None, "connect_timeout": 10})
-    try:
-        with pool.connection() as conn:
-            conn.execute(SCHEMA)
-    except Exception as e:
-        print(f"schema setup failed: {e}", file=sys.stderr)
+
+_schema_ready = False
+
+
+def ensure_schema():
+    """Create tables if missing. Retried on every use until it succeeds, so a database
+    that wasn't ready when the site started doesn't break anything."""
+    global _schema_ready
+    if _schema_ready or pool is None:
+        return
+    with pool.connection() as conn:
+        conn.execute(SCHEMA)
+    _schema_ready = True
 
 
 # =====================================================================
@@ -68,6 +76,7 @@ def save(rows):
             print(json.dumps(r, default=str), flush=True)
         return
     try:
+        ensure_schema()
         with pool.connection() as conn:
             conn.cursor().executemany(INSERT, [[r.get(c) for c in COLUMNS] for r in rows])
     except Exception as e:  # a database hiccup must never break the bait
@@ -386,6 +395,16 @@ def dashboard():
         return ask_password()
     if pool is None:
         return "DATABASE_URL is not set, so there is nothing to show yet."
+    try:
+        ensure_schema()
+        return build_dashboard()
+    except Exception:
+        import traceback
+        return Response("Dashboard error. Send this to Claude:\n\n" + traceback.format_exc(), 500,
+                        mimetype="text/plain")
+
+
+def build_dashboard():
     days = max(1, min(int(request.args.get("days", 7) or 7), 365))
     ip_filter = request.args.get("ip") or None
     events = load(days, ip_filter)
@@ -431,6 +450,7 @@ def dashboard():
 def export():
     if not authorized():
         return ask_password()
+    ensure_schema()
     days = max(1, min(int(request.args.get("days", 30) or 30), 365))
     events = load(days)
     geo = locate(list({e["src_ip"] for e in events}))
