@@ -122,6 +122,8 @@ def record(response):
     if request.path.startswith(DASH) or request.path in ("/healthz", "/favicon.ico"):
         return response
     xff = request.headers.get("X-Forwarded-For", "")
+    if not xff and DATABASE_URL:  # Render's own internal checks, not internet traffic
+        return response
     status = response.status_code
     base = {"src_ip": xff.split(",")[0].strip() if xff else request.remote_addr, "xff_raw": xff or None,
             "method": request.method, "path": request.path,
@@ -324,7 +326,8 @@ def locate(ips):
 
 
 def load(days, ip=None):
-    sql = "SELECT * FROM events WHERE ts >= now() - make_interval(days => %s)"
+    sql = ("SELECT * FROM events WHERE ts >= now() - make_interval(days => %s)"
+           " AND src_ip IS NOT NULL AND src_ip NOT LIKE '127.%%' AND src_ip NOT LIKE '10.%%'")
     args = [days]
     if ip:
         sql += " AND src_ip = %s"
@@ -367,6 +370,7 @@ table{width:100%;border-collapse:collapse;font-size:13px;background:#1e2b38;bord
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #2c3b4a;vertical-align:top}th{color:#9fb0c0;font-weight:600}
 td.w{word-break:break-all}.scroll{max-height:420px;overflow:auto;border-radius:6px}
 .bar{background:#e8a33d;height:10px;border-radius:2px}
+.dark-tiles{filter:invert(1) hue-rotate(180deg) brightness(.85) contrast(.9)}
 </style></head><body><div class="wrap">
 <h1>Honeypot dashboard</h1>
 <div class="sub">Last {{ days }} days{% if ip %} &middot; IP {{ ip }} &middot; <a href="?days={{ days }}">back to all</a>{% endif %}
@@ -391,8 +395,8 @@ td.w{word-break:break-all}.scroll{max-height:420px;overflow:auto;border-radius:6
 
 <h2>Attacker IPs</h2><div class="scroll"><table><tr><th>IP</th><th>Location</th><th>ISP</th><th>Requests</th>
 <th>Logins</th><th>Uploads</th><th>Main attack</th><th>Tools</th><th>Last seen (UTC)</th></tr>
-{% for a in ips %}<tr><td><a href="?days={{ days }}&ip={{ a.ip }}">{{ a.ip }}</a></td><td>{{ a.city }}{{ ', ' if a.city }}{{ a.country }}</td>
-<td>{{ a.isp }}</td><td>{{ a.requests }}</td><td>{{ a.logins }}</td><td>{{ a.uploads }}</td><td>{{ a.main }}</td>
+{% for a in ips %}<tr><td><a href="?days={{ days }}&ip={{ a.ip }}">{{ a.ip }}</a></td><td>{{ a.city ~ ', ' if a.city }}{{ a.country }}</td>
+<td>{{ a.isp or '' }}</td><td>{{ a.requests }}</td><td>{{ a.logins }}</td><td>{{ a.uploads }}</td><td>{{ a.main }}</td>
 <td>{{ a.tools }}</td><td>{{ a.last }}</td></tr>{% endfor %}</table></div>
 
 <div class="grid">
@@ -415,12 +419,13 @@ target="_blank" rel="noopener">{{ f.file_sha256 }}</a></td></tr>{% endfor %}</ta
 <script>
 const points = {{ points|tojson }};
 const map = L.map('map', {worldCopyJump: true}).setView([25, 10], 2);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  {attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 10}).addTo(map);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  {attribution: '&copy; OpenStreetMap contributors', maxZoom: 10, className: 'dark-tiles'}).addTo(map);
 points.forEach(p => L.circleMarker([p.lat, p.lon], {radius: Math.min(4 + Math.sqrt(p.requests) * 2, 22),
   color: '#e8a33d', fillColor: '#e8a33d', fillOpacity: 0.5, weight: 1})
   .bindPopup(`<b>${p.ip}</b><br>${p.city || ''} ${p.country}<br>${p.isp || ''}<br>${p.requests} requests, ${p.logins} logins<br>${p.main}`)
   .addTo(map));
+if (points.length) map.fitBounds(points.map(p => [p.lat, p.lon]), {padding: [40, 40], maxZoom: 5});
 </script></body></html>"""
 
 
