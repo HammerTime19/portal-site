@@ -4,7 +4,8 @@ A web honeypot that poses as the employee portal of a made-up logistics company,
 "Northbridge Freight". It records what real attackers on the internet try against it,
 then sorts and maps that activity on a password-protected dashboard.
 
-Built with Python, Flask and PostgreSQL, and deployed on Render.
+Built with Python, Flask and PostgreSQL, deployed on Render behind a custom domain
+managed in Cloudflare.
 
 ![Dashboard overview: totals and a world map of attacker locations](docs/dashboard-overview.png)
 
@@ -115,6 +116,13 @@ It shows:
 web service that runs Gunicorn (2 workers, 4 threads each). `DATABASE_URL` is filled
 in automatically. Set `DASHBOARD_PASSWORD` yourself in the Render dashboard.
 
+### Custom domain (Cloudflare)
+
+The honeypot is served on its own domain, with DNS managed in Cloudflare and pointed
+at the Render service, so it looks like a real company site rather than an
+`onrender.com` address. The app reads the first address in `X-Forwarded-For`, so the
+real client IP is recorded, not a proxy's.
+
 ### Locally
 
 ```bash
@@ -146,4 +154,4 @@ is turned off.
 
 ## Tech stack
 
-Python 3.12 · Flask · Gunicorn · PostgreSQL (psycopg 3) · Leaflet · Render
+Python 3.12 · Flask · Gunicorn · PostgreSQL (psycopg 3) · Leaflet · Render · Cloudflare
