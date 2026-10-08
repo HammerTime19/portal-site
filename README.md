@@ -6,6 +6,37 @@ then sorts and maps that activity on a password-protected dashboard.
 
 Built with Python, Flask and PostgreSQL, and deployed on Render.
 
+![Dashboard overview: totals and a world map of attacker locations](docs/dashboard-overview.png)
+
+## Results (first 15 days)
+
+Live on the public internet from 23 September to 8 October 2026:
+
+- **10,700+ requests from 1,300+ IP addresses in 61 countries.** The most IPs came
+  from the United States, Kazakhstan, Singapore, Germany and Japan, mostly cloud and
+  hosting providers.
+- **Scanners found it fast.** The first request for the bait `/.env` file came about an
+  hour after the first visit. Over the 15 days, 38 IPs requested `/.env`, along with
+  variants like `.env.production`, `.env.bak` and `.env.old`.
+- **Brute-force attempts used a password list built from the target's name.** Every
+  attempt used the username `admin` on the fake WordPress login. Next to `admin123` and
+  `admin2025`, attackers tried `freight`, `freight123` and the site's own domain name,
+  which suggests the tool generated passwords from the target's name and domain.
+- **Real exploit attempts**, including a PHPUnit remote code execution probe
+  (CVE-2017-9841), a Laravel Ignition remote code execution attempt (CVE-2021-3129)
+  and requests for Spring Boot actuator endpoints such as `/actuator/env` and
+  `/actuator/heapdump`.
+- **Most traffic was automated reconnaissance.** 829 IPs sent exactly one request,
+  and the 10 busiest IPs sent 43% of all requests. No Log4Shell, SQL injection or
+  cross-site scripting payloads were seen in this period.
+
+![Attack types and top countries](docs/attack-types-countries.png)
+
+![Most common passwords tried and most-probed paths](docs/passwords-paths.png)
+
+*Dashboard totals include a handful of my own test requests, which is why the
+results above are rounded down.*
+
 ## What attackers see
 
 - An employee portal home page with a sign-in link and a document-upload link
