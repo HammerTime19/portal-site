@@ -440,7 +440,7 @@ def dashboard():
         return build_dashboard()
     except Exception:
         import traceback
-        return Response("Dashboard error. Send this to Claude:\n\n" + traceback.format_exc(), 500,
+        return Response("Dashboard error:\n\n" + traceback.format_exc(), 500,
                         mimetype="text/plain")
 
 
